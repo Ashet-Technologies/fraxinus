@@ -1,9 +1,21 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
 const Char = extern struct {
     char: u16,
     flags: Attributes,
+
+    pub fn format(
+        value: Char,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = fmt;
+        _ = options;
+        writer.print("{u}", .{value.char});
+    }
 };
 
 const Attributes = packed struct(u16) {
@@ -70,6 +82,8 @@ const Terminal = struct {
     page: Page,
     dirty_lines: std.DynamicBitSetUnmanaged,
     cursor: Point,
+    attrs: Attributes,
+    old_attrs: Attributes,
 
     fn open(allocator: Allocator, size: Point, max_size: Point) !*Terminal {
         var terminal = try allocator.create(Terminal);
@@ -116,6 +130,10 @@ const Terminal = struct {
     fn reset(self: *Terminal) void {}
 
     fn write(self: *Terminal, data: []const u8) void {}
+
+    const dump = if (builtin.mode != .Debug) struct {} else struct {
+        fn print(self: *const Terminal) void {}
+    };
 };
 
 test "Page create and free" {
