@@ -28,6 +28,25 @@ pub const VirtualTerminal = struct {
     state: State = .{}, // current cursor state
     dirty_lines: std.DynamicBitSet, // set of lines that have been changed in the terminal
 
+    pub fn init(allocator: std.mem.Allocator, width: u15, height: u15) !VirtualTerminal {
+        var page = try Page.alloc(allocator, width, height);
+        errdefer page.free(allocator);
+
+        var dirty_lines = try std.DynamicBitSet.initEmpty(allocator, height);
+        errdefer dirty_lines.deinit();
+
+        return VirtualTerminal{
+            .page = page,
+            .dirty_lines = dirty_lines,
+        };
+    }
+
+    pub fn deinit(vt: *VirtualTerminal, allocator: std.mem.Allocator) void {
+        vt.page.free(allocator);
+        vt.dirty_lines.deinit();
+        vt.* = undefined;
+    }
+
     pub fn write(vt: *VirtualTerminal, string: []const u8) void {
         var proc = Processor.new(vt);
         proc.write(string);
@@ -83,9 +102,9 @@ pub const Page = struct {
     max_width: u16,
     max_height: u16,
 
-    pub fn alloc(allocator: std.mem.Allocator, max_width: usize, max_height: usize) !Page {
+    pub fn alloc(allocator: std.mem.Allocator, max_width: u16, max_height: u16) !Page {
         return Page{
-            .chars = (try allocator.alloc(Char, max_width * max_height)).ptr,
+            .chars = (try allocator.alloc(Char, @as(usize, max_width) * max_height)).ptr,
             .stride = max_width,
 
             .width = max_width,
@@ -140,11 +159,59 @@ pub const StreamEvent = union(enum) {
 
 /// https://en.wikipedia.org/wiki/ANSI_escape_code
 pub const AnsiDecoder = struct {
-    intermediate_buffer: std.BoundedArray(u8, 32), // max limit
+    intermediate_buffer: std.BoundedArray(u8, 32) = .{}, // max limit
 
-    const FeedResult = struct { count: usize, event: ?StreamEvent };
+    pub const FeedResult = struct { count: usize, event: ?StreamEvent };
     pub fn feed(decoder: *AnsiDecoder, data: []const u8) FeedResult {
         _ = decoder;
-        _ = data;
+        // TODO: Properly implement ansi decoding here
+        return FeedResult{
+            .event = .{ .text = data },
+            .count = data.len,
+        };
     }
 };
+
+pub fn DecodingTerminal(comptime Decoder: type) type {
+    return struct {
+        const DT = @This();
+
+        decoder: Decoder = .{},
+        terminal: VirtualTerminal,
+
+        pub fn init(allocator: std.mem.Allocator, width: u15, height: u15) !DT {
+            return DT{
+                .decoder = .{},
+                .terminal = try VirtualTerminal.init(allocator, width, height),
+            };
+        }
+
+        pub fn deinit(dt: *DT, allocator: std.mem.Allocator) void {
+            dt.terminal.deinit(allocator);
+            dt.* = undefined;
+        }
+
+        pub fn feed(dt: *DT, string: []const u8) void {
+            var offset: usize = 0;
+            while (offset < string.len) {
+                const element = dt.decoder.feed(string[offset..]);
+                if (element.event) |event| {
+                    switch (event) {
+                        .text => |val| dt.terminal.write(val),
+                        .command => |val| dt.terminal.execute(val),
+                    }
+                }
+                offset += element.count;
+            }
+        }
+    };
+}
+
+test "basic instance creation/destruction" {
+    const Term = DecodingTerminal(AnsiDecoder);
+
+    var term = try Term.init(std.testing.allocator, 80, 25);
+    defer term.deinit(std.testing.allocator);
+
+    term.feed("");
+}
